@@ -1,5 +1,4 @@
 import torch
-import numpy as np
 from sklearn.preprocessing import StandardScaler
 import pandas as pd
 from kan import KAN
@@ -17,10 +16,13 @@ class KAN(nn.Module):
         return x
 
 model = KAN()
-model.load_state_dict(torch.load('C:/Users/User/Desktop/IVF/AI/DNN/Предсказания/Prediction_KAN.pth'))
+model.load_state_dict(torch.load("C:/Users/User/Desktop/IVF/AI/DNN/FINAL/Prediction_KAN.pth"))
+
+import joblib
+joblib.dump(model, 'KAN_model.pkcls')
 
 # Загрузка данных из Excel-файла в DataFrame
-new_df = pd.read_excel("C:/Users/User/Desktop/IVF/Fertimed/NN Predictions/2024/I.xlsx")
+new_df = pd.read_excel("C:/Users/User/Downloads/май.xlsx")
 
 # Преобразование столбцов в числовой формат, если они не содержат числовые значения
 columns_to_convert = ['День переноса']
