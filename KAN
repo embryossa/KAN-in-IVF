@@ -1,15 +1,15 @@
 import pandas as pd
 import numpy as np
 import torch
-import torch.nn.functional as F
 from torch import nn
-from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_score, roc_curve, auc, precision_recall_curve
+from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_score, roc_curve, auc, \
+    precision_recall_curve
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt
 
 # Загрузка данных из Excel-файла в DataFrame
-df_selected = pd.read_excel('new_df_with_KPI.xlsx')
+df_selected = pd.read_excel("C:/Users/User/Desktop/IVF/AI/DNN/обучение и валидация/all_df_with_KPI.xlsx")
 
 # Выбор признаков и целевой переменной
 selected_features = [
@@ -47,6 +47,7 @@ dataset = {
     'test_label': torch.from_numpy(y_test).float()
 }
 
+
 # Инициализация модели KAN
 class KAN(nn.Module):
     def __init__(self, width, grid, k):
@@ -59,7 +60,9 @@ class KAN(nn.Module):
         x = self.fc2(x)
         return x
 
-model = KAN(width=[X_train_normalized.shape[1], 10, 1], grid=5, k=3)  # Для бинарной классификации выходной слой имеет размер 1
+
+model = KAN(width=[X_train_normalized.shape[1], 10, 1], grid=5,
+            k=3)  # Для бинарной классификации выходной слой имеет размер 1
 
 # Определение оптимизатора и функции потерь
 optimizer = torch.optim.Adam(model.parameters())
@@ -119,7 +122,8 @@ for step in range(100):
         val_f1s.append(val_f1)
 
     if (step + 1) % 1 == 0:
-        print(f'Step [{step + 1}/20], Train Loss: {train_losses[-1]:.4f}, Val Loss: {val_losses[-1]:.4f}, Train Acc: {train_accuracies[-1]:.4f}, Val Acc: {val_accuracies[-1]:.4f}, Train Precision: {train_precision:.4f}, Train Recall: {train_recall:.4f}, Train F1: {train_f1:.4f}, Val Precision: {val_precision:.4f}, Val Recall: {val_recall:.4f}, Val F1: {val_f1:.4f}')
+        print(
+            f'Step [{step + 1}/20], Train Loss: {train_losses[-1]:.4f}, Val Loss: {val_losses[-1]:.4f}, Train Acc: {train_accuracies[-1]:.4f}, Val Acc: {val_accuracies[-1]:.4f}, Train Precision: {train_precision:.4f}, Train Recall: {train_recall:.4f}, Train F1: {train_f1:.4f}, Val Precision: {val_precision:.4f}, Val Recall: {val_recall:.4f}, Val F1: {val_f1:.4f}')
 
 # Оценка модели на тестовых данных
 model.eval()
@@ -159,6 +163,7 @@ plt.legend()
 plt.tight_layout()
 plt.show()
 
+
 # Построение ROC-AUC и PRC графиков
 def plot_roc_prc(y_true, y_scores, dataset_type):
     # ROC-AUC
@@ -189,6 +194,7 @@ def plot_roc_prc(y_true, y_scores, dataset_type):
     plt.tight_layout()
     plt.show()
 
+
 # Валидация
 model.eval()
 with torch.no_grad():
@@ -205,3 +211,40 @@ with torch.no_grad():
 
 # Сохранение модели в файл
 torch.save(model.state_dict(), 'Prediction_KAN.pth')
+
+import matplotlib.pyplot as plt
+from sklearn.calibration import calibration_curve
+from sklearn.isotonic import IsotonicRegression
+
+X_val_tensor = dataset['val_input']
+y_val_tensor = dataset['val_label']
+# Получаем некалиброванные выходы модели
+with torch.no_grad():
+    outputs = model(X_val_tensor)
+    uncalibrated_probs = torch.sigmoid(outputs).cpu().numpy()
+
+# Применяем изотоническую регрессию для калибровки
+ir = IsotonicRegression(out_of_bounds='clip')
+calibrated_probs = ir.fit_transform(uncalibrated_probs.ravel(), y_val_tensor.cpu().numpy().ravel())
+
+# Строим calibration plot
+fraction_of_positives, mean_predicted_value = calibration_curve(y_val_tensor.cpu().numpy(), uncalibrated_probs,
+                                                                n_bins=10)
+
+plt.plot([0, 1], [0, 1], linestyle='--', label='Perfectly calibrated')
+plt.plot(mean_predicted_value, fraction_of_positives, marker='o', label='Uncalibrated')
+
+fraction_of_positives, mean_predicted_value = calibration_curve(y_val_tensor.cpu().numpy(), calibrated_probs, n_bins=10)
+plt.plot(mean_predicted_value, fraction_of_positives, marker='s', label='Calibrated')
+
+plt.legend()
+plt.xlabel('Mean predicted value')
+plt.ylabel('Fraction of positives')
+plt.title('Calibration Plot')
+plt.show()
+
+import pickle
+
+# Сохранение обученного экземпляра IsotonicRegression
+with open('isotonic_regressor.pkl', 'wb') as f:
+    pickle.dump(ir, f)
