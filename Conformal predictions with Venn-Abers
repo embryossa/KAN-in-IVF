@@ -26,7 +26,7 @@ kan_model = KAN()
 kan_model.load_state_dict(torch.load("C:/Users/User/PycharmProjects/pythonProject/KAN/GGRC_updated_model.pth"))
 
 # Load the DNN model
-dnn_model = load_model("C:/Users/User/PycharmProjects/pythonProject/DNN for GGRC/GGRC_tuned_model.h5")
+dnn_model = load_model("C:/Users/User/Desktop/IVF/AI/DNN/FINAL/neural_network_model.h5")
 
 # Load data from Excel file into DataFrame
 new_df = pd.read_excel("C:/Users/User/Desktop/IVF/AI/DNN/обучение и валидация/all_df_with_KPI.xlsx")
@@ -178,3 +178,85 @@ print(f"Accuracy: {kan_accuracy:.4f}, Precision: {kan_precision:.4f}, Recall: {k
 
 print("DNN Model Performance after Venn-Abers Calibration:")
 print(f"Accuracy: {dnn_accuracy:.4f}, Precision: {dnn_precision:.4f}, Recall: {dnn_recall:.4f}, F1 Score: {dnn_f1:.4f}, AUC: {dnn_roc_auc:.4f}, MCC: {dnn_mcc:.4f}")
+
+from sklearn.metrics import brier_score_loss
+
+kan_brier_score = brier_score_loss(y_test, kan_proba_flat)
+dnn_brier_score = brier_score_loss(y_test, dnn_proba_flat)
+
+print(f"KAN Brier Score: {kan_brier_score:.4f}")
+print(f"DNN Brier Score: {dnn_brier_score:.4f}")
+
+from sklearn.calibration import calibration_curve
+
+def expected_calibration_error(y_true, y_prob, n_bins=10):
+    prob_true, prob_pred = calibration_curve(y_true, y_prob, n_bins=n_bins, strategy='uniform')
+    ece = np.abs(prob_true - prob_pred).mean()
+    return ece
+
+kan_ece = expected_calibration_error(y_test, kan_proba_flat)
+dnn_ece = expected_calibration_error(y_test, dnn_proba_flat)
+
+print(f"KAN ECE: {kan_ece:.4f}")
+print(f"DNN ECE: {dnn_ece:.4f}")
+
+def maximum_calibration_error(y_true, y_prob, n_bins=10):
+    prob_true, prob_pred = calibration_curve(y_true, y_prob, n_bins=n_bins, strategy='uniform')
+    mce = np.max(np.abs(prob_true - prob_pred))
+    return mce
+
+kan_mce = maximum_calibration_error(y_test, kan_proba_flat)
+dnn_mce = maximum_calibration_error(y_test, dnn_proba_flat)
+
+print(f"KAN MCE: {kan_mce:.4f}")
+print(f"DNN MCE: {dnn_mce:.4f}")
+
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.calibration import calibration_curve
+from sklearn.metrics import brier_score_loss
+import scipy.stats as stats
+
+# Define the function to plot calibration curves
+def calibration_plot(y_true, y_prob, model_name, label_prefix=''):
+    prob_true, prob_pred = calibration_curve(y_true, y_prob, n_bins=10, strategy='uniform')
+    plt.plot(prob_pred, prob_true, marker='o', label=f'{model_name} {label_prefix}')
+    plt.xlabel('Mean Predicted Probability')
+    plt.ylabel('Fraction of Positives')
+    plt.title('Calibration Plot')
+    plt.legend()
+
+# Normalize predictions to [0, 1]
+def normalize_probabilities(proba):
+    return (proba - np.min(proba)) / (np.max(proba) - np.min(proba))
+
+# Pre-calibration predictions for KAN
+kan_proba_raw = kan_model(torch.tensor(X_test, dtype=torch.float32)).detach().numpy().flatten()
+kan_proba_raw = normalize_probabilities(kan_proba_raw)  # Normalize
+
+# Pre-calibration predictions for DNN
+dnn_proba_raw = dnn_model.predict(X_test)  # Ensure this is a (n_samples, 1) shape if it's not already
+dnn_proba_raw = dnn_proba_raw.flatten()  # Flatten if necessary
+
+plt.figure(figsize=(14, 10))
+
+# Plot pre-calibration calibration
+calibration_plot(y_test, kan_proba_raw, 'KAN (Raw)', label_prefix='Before Calibr.: ')
+calibration_plot(y_test, dnn_proba_raw, 'DNN (Raw)', label_prefix='Before Calibr.: ')
+
+# Apply Venn-Abers calibration
+kan_proba_cal = kan_va_calibrator.predict_proba(X_test)[:, 1]
+dnn_proba_cal = dnn_va_calibrator.predict_proba(X_test)[:, 1]
+
+# Plot post-calibration calibration
+calibration_plot(y_test, kan_proba_cal, 'KAN (Calibrated)', label_prefix='After Calibr.: ')
+calibration_plot(y_test, dnn_proba_cal, 'DNN (Calibrated)', label_prefix='After Calibr.: ')
+
+# Plot perfect calibration line
+plt.plot([0, 1], [0, 1], 'k--', label='Perfectly Calibrated')
+
+plt.xlabel('Mean Predicted Probability')
+plt.ylabel('Fraction of Positives')
+plt.title('Calibration Plot Before and After Venn-Abers Calibration')
+plt.legend()
+plt.show()
