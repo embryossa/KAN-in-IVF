@@ -38,7 +38,7 @@ tqdm==4.66.2
 Clone the repository:
 
 ```bash
-git clone https://github.com/yourusername/kan-model.git
+git clone https://github.com/embryossa/kan_in_IVF.git
 cd kan-model
 ```
 
