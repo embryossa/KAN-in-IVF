@@ -17,6 +17,8 @@
   - Сохраняет Prediction_KAN.pth (совместим с ivf_digital_twin.py)
   - Сохраняет isotonic_regressor_new.pkl (калибровка)
 
+ВАЖНО: После переобучения нужно обновить класс KAN в ivf_digital_twin.py
+       (инструкция в конце файла в комментарии PATCH).
 """
 
 import pandas as pd
@@ -67,7 +69,7 @@ class KANLinear(nn.Module):
         scale_base: float = 1.0,
         scale_spline: float = 1.0,
         grid_eps: float = 0.02,
-        grid_range: tuple = (-1.0, 1.0),
+        grid_range: tuple = (-3.5, 3.5),   # покрывает ±3σ после StandardScaler
     ):
         super().__init__()
         self.in_features  = in_features
@@ -135,7 +137,13 @@ class KANLinear(nn.Module):
             f"Ожидается (batch, {self.in_features}), получено {x.shape}"
 
         grid = self.grid        # (in_features, G + 2k + 1)
-        x_e  = x.unsqueeze(-1) # (batch, in_features, 1)  для broadcast
+
+        # Клипируем x к диапазону внутренних узлов сетки.
+        # За границей сетки все базисы равны 0, что делает матрицу A вырожденной.
+        # Стандартная практика B-сплайнов: возвращаем значение крайней функции.
+        x_lo = grid[:, self.spline_order].unsqueeze(0)        # (1, in)
+        x_hi = grid[:, -(self.spline_order + 1)].unsqueeze(0) # (1, in)
+        x_e  = x.clamp(x_lo, x_hi).unsqueeze(-1)              # (batch, in, 1)
 
         # Порядок 0: индикаторные функции на интервалах сетки
         bases = ((x_e >= grid[:, :-1]) & (x_e < grid[:, 1:])).to(x.dtype)
@@ -169,9 +177,13 @@ class KANLinear(nn.Module):
         A = A.permute(1, 0, 2)          # (in, n, G+k)
         B = y.permute(1, 0, 2)          # (in, n, out)
 
-        # Решение переопределённой/недоопределённой системы A @ coeff = B
-        solution = torch.linalg.lstsq(A, B).solution  # (in, G+k, out)
-        return solution.permute(2, 0, 1).contiguous()  # (out, in, G+k)
+        # pinv устойчив к недоопределённым системам и не вызывает MKL SGELSY.
+        # nan_to_num защищает от нефинитных значений перед SVD.
+        A = torch.nan_to_num(A, nan=0.0, posinf=0.0, neginf=0.0)
+        B = torch.nan_to_num(B, nan=0.0, posinf=0.0, neginf=0.0)
+        solution = torch.linalg.pinv(A) @ B          # (in, G+k, out)
+        solution = torch.nan_to_num(solution, nan=0.0)
+        return solution.permute(2, 0, 1).contiguous() # (out, in, G+k)
 
     # ── Масштабированные веса сплайна ────────────────────────────────────
 
@@ -220,6 +232,7 @@ class KANLinear(nn.Module):
         splines = self.b_splines(x).permute(1, 0, 2)    # (in, batch, G+k)
         wt      = self.scaled_spline_weight.permute(1, 2, 0)  # (in, G+k, out)
         y_curr  = torch.bmm(splines, wt).permute(1, 0, 2)    # (batch, in, out)
+        y_curr  = torch.nan_to_num(y_curr, nan=0.0, posinf=0.0, neginf=0.0)
 
         # ── Построить новую сетку из распределения данных ─────────────────
         x_sorted, _ = x.sort(dim=0)   # (batch, in_features)
@@ -287,7 +300,7 @@ class KAN(nn.Module):
         scale_base:   float = 1.0,
         scale_spline: float = 1.0,
         grid_eps:     float = 0.02,
-        grid_range:   tuple = (-1.0, 1.0),
+        grid_range:   tuple = (-3.5, 3.5),   # покрывает ±3σ после StandardScaler
     ):
         super().__init__()
 
@@ -358,6 +371,45 @@ selected_features = [
     "Частота получения ОКК", "Число эмбрионов 5 дня",
     "Заморожено эмбрионов", "Перенесено эмбрионов", "KPIScore",
 ]
+
+# ── Очистка данных ───────────────────────────────────────────────────────
+# Частотные признаки (деление на 0 при MII=0 и т.п.) порождают inf.
+# Обрабатываем до split/scale, чтобы не утекло в тест.
+
+print("=== Диагностика до очистки ===")
+for col in selected_features:
+    vals  = df[col].values.astype(float)
+    n_inf = np.isinf(vals).sum()
+    n_nan = df[col].isna().sum()
+    n_big = (np.abs(vals) > np.finfo(np.float32).max).sum()
+    if n_inf or n_nan or n_big:
+        print(f"  {col:<52} inf={n_inf}  nan={n_nan}  too_large={n_big}")
+
+# 1. inf / -inf → NaN
+df[selected_features] = df[selected_features].replace([np.inf, -np.inf], np.nan)
+
+# 2. Значения вне float32 диапазона → NaN
+FLOAT32_MAX = np.finfo(np.float32).max
+for col in selected_features:
+    mask = np.abs(df[col].values.astype(float)) > FLOAT32_MAX
+    if mask.any():
+        df.loc[mask, col] = np.nan
+
+# 3. NaN → медиана колонки
+from sklearn.impute import SimpleImputer
+imputer = SimpleImputer(strategy="median")
+df[selected_features] = imputer.fit_transform(df[selected_features])
+
+# 4. Мягкое клиппирование: 1-й / 99-й перцентили (защита от выбросов)
+for col in selected_features:
+    lo = np.percentile(df[col], 1)
+    hi = np.percentile(df[col], 99)
+    df[col] = df[col].clip(lo, hi)
+
+assert not np.isinf(df[selected_features].values.astype(float)).any(), "Остались inf!"
+assert not np.isnan(df[selected_features].values.astype(float)).any(), "Остались NaN!"
+print(f"Данные очищены. Строк: {len(df)}\n")
+# ─────────────────────────────────────────────────────────────────────────
 
 X = df[selected_features].values.astype(np.float32)
 y = df["Исход переноса"].values.astype(np.float32)
@@ -622,3 +674,5 @@ print("[OK] isotonic_regressor_new.pkl сохранён")
 print("\nОбучение завершено.")
 print(f"Параметров в реальной KAN: {n_params:,}")
 print(f"ROC-AUC на тесте: {test_auc:.4f}")
+
+
