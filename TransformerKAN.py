@@ -38,6 +38,16 @@ import matplotlib.pyplot as plt
 # mambular FTTransformer
 from mambular.models import FTTransformerClassifier
 
+def _ft_proba(ft_model, df) -> np.ndarray:
+    """
+    Возвращает 1D массив вероятностей класса 1.
+    Разные версии mambular возвращают (n,1) или (n,2).
+    """
+    p = ft_model.predict_proba(df)
+    if p.ndim == 1:
+        return p                  # уже (n,)
+    return p[:, 0] if p.shape[1] == 1 else p[:, 1]
+
 # ══════════════════════════════════════════════════════════════════════════
 #  1.  НАСТОЯЩАЯ KAN (B-сплайны на рёбрах, Liu et al. 2024)
 # ══════════════════════════════════════════════════════════════════════════
@@ -217,9 +227,8 @@ class EnsembleModel(nn.Module):
         # FTTransformer: предсказывает (batch, n_classes),
         # берём столбец класса 1
         x_df = pd.DataFrame(x.detach().cpu().numpy(), columns=self.feature_names)
-        ft_proba = self.ft_model.predict_proba(x_df)              # (batch, 2)
-        ft_prob  = torch.tensor(
-            ft_proba[:, 1], dtype=torch.float32, device=x.device  # класс 1
+        ft_prob = torch.tensor(
+            _ft_proba(self.ft_model, x_df), dtype=torch.float32, device=x.device
         )
 
         # Нормализованные веса через softmax
@@ -399,7 +408,7 @@ ft_model.fit(
 )
 
 # Быстрая проверка метрик FTT на валидации
-ft_val_proba = ft_model.predict_proba(val_df)[:, 1]   # класс 1
+ft_val_proba = _ft_proba(ft_model, val_df)# класс 1
 ft_val_auc   = roc_auc_score(y_val, ft_val_proba)
 print(f"FTTransformer Val AUC: {ft_val_auc:.4f}\n")
 
@@ -483,20 +492,31 @@ def evaluate(model_fn, X_tensor, y_true_np, label):
 
 # KAN
 kan_model.eval()
-with torch.no_grad():
-    kan_test_fn = lambda x: torch.sigmoid(
-        kan_model(x).squeeze()).cpu().numpy()
+
+def kan_test_fn(x):
+    """Safe KAN inference: returns probabilities as numpy array."""
+    kan_model.eval()
+    with torch.no_grad():
+        return torch.sigmoid(
+            kan_model(x).squeeze()
+        ).detach().cpu().numpy()
+
 kan_probs = evaluate(kan_test_fn, test_input, y_test, "KAN")
 
 # FTTransformer
-ft_probs = ft_model.predict_proba(test_df)[:, 1]
+ft_probs = _ft_proba(ft_model, test_df)
 evaluate(lambda _: ft_probs, test_input, y_test, "FTTransformer")
 
 # Ensemble
 ensemble_model.eval()
-with torch.no_grad():
-    ens_fn = lambda x: ensemble_model(x).squeeze().cpu().numpy()
-ens_probs = evaluate(ens_fn, test_input, y_test, "Ensemble")
+
+def ens_test_fn(x):
+    """Safe ensemble inference: no graph is created before numpy conversion."""
+    ensemble_model.eval()
+    with torch.no_grad():
+        return ensemble_model(x).squeeze().detach().cpu().numpy()
+
+ens_probs = evaluate(ens_test_fn, test_input, y_test, "Ensemble")
 
 # ══════════════════════════════════════════════════════════════════════════
 #  9.  ВИЗУАЛИЗАЦИЯ
@@ -525,7 +545,7 @@ plt.show()
 
 ensemble_model.eval()
 with torch.no_grad():
-    val_probs_ens = ensemble_model(val_input).squeeze().cpu().numpy()
+    val_probs_ens = ensemble_model(val_input).squeeze().detach().cpu().numpy()
 
 ir = IsotonicRegression(out_of_bounds="clip")
 ir.fit(val_probs_ens, y_val)
